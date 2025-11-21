@@ -1,6 +1,6 @@
 # Multi-stage build for Node.js Result service
 # Stage 1: Build stage
-FROM node:18-alpine AS builder
+FROM node:25-alpine AS builder
 
 # Set working directory
 WORKDIR /app
@@ -13,7 +13,7 @@ RUN npm ci --only=production && \
     npm cache clean --force
 
 # Stage 2: Runtime stage
-FROM node:18-alpine
+FROM node:25-alpine
 
 # Install curl for healthcheck and tini for proper signal handling
 RUN apk add --no-cache curl tini
