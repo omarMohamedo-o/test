@@ -136,7 +136,7 @@ jobs:
             -no-color
 
       - name: Upload plan
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: terraform-plan
           path: ${{ env.WORKING_DIR }}/tfplan
@@ -201,7 +201,7 @@ jobs:
         run: terraform output -json > terraform-outputs.json
 
       - name: Upload outputs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: terraform-outputs
           path: ${{ env.WORKING_DIR }}/terraform-outputs.json
