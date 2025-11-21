@@ -1,0 +1,81 @@
+# Production environment values
+global:
+  environment: production
+
+namespace:
+  labels:
+    environment: production
+
+postgresql:
+  auth:
+    password: CHANGE_ME_IN_PRODUCTION # Should use external secret manager
+  persistence:
+    size: 2Gi
+  resources:
+    requests:
+      memory: 512Mi
+      cpu: 500m
+    limits:
+      memory: 1Gi
+      cpu: 1000m
+
+redis:
+  auth:
+    password: CHANGE_ME_IN_PRODUCTION # Should use external secret manager
+  persistence:
+    size: 1Gi
+  resources:
+    requests:
+      memory: 256Mi
+      cpu: 250m
+    limits:
+      memory: 512Mi
+      cpu: 500m
+
+vote:
+  replicaCount: 3
+  resources:
+    requests:
+      memory: 256Mi
+      cpu: 250m
+    limits:
+      memory: 512Mi
+      cpu: 500m
+
+result:
+  replicaCount: 3
+  resources:
+    requests:
+      memory: 256Mi
+      cpu: 250m
+    limits:
+      memory: 512Mi
+      cpu: 500m
+
+worker:
+  replicaCount: 2
+  resources:
+    requests:
+      memory: 256Mi
+      cpu: 250m
+    limits:
+      memory: 512Mi
+      cpu: 500m
+
+ingress:
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+  hosts:
+    - host: vote.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+          service: vote
+          port: 80
+    - host: result.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+          service: result
+          port: 4000

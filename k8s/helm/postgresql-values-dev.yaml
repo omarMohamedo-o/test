@@ -1,0 +1,70 @@
+## PostgreSQL Helm Values - Development Environment
+## Using Bitnami PostgreSQL Chart
+
+## Authentication
+auth:
+  username: postgres
+  password: postgres
+  database: postgres
+  existingSecret: ""
+
+## Primary configuration
+primary:
+  persistence:
+    enabled: true
+    size: 5Gi
+    storageClass: "standard"
+
+  resources:
+    requests:
+      memory: 256Mi
+      cpu: 250m
+    limits:
+      memory: 512Mi
+      cpu: 500m
+
+  ## Security context
+  podSecurityContext:
+    enabled: true
+    fsGroup: 1001
+    runAsUser: 1001
+    runAsNonRoot: true
+
+  containerSecurityContext:
+    enabled: true
+    runAsUser: 1001
+    runAsNonRoot: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    seccompProfile:
+      type: RuntimeDefault
+
+## Network Policy
+networkPolicy:
+  enabled: true
+  allowExternal: false
+  ## Allow ingress from voting-app namespace
+  ingressRules:
+    primaryAccessOnlyFrom:
+      enabled: true
+      namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: voting-app
+      podSelector:
+        matchLabels:
+          app: worker
+    customRules:
+      - from:
+          - podSelector:
+              matchLabels:
+                app: result
+
+## Metrics
+metrics:
+  enabled: false # Disable in dev for simplicity
+
+## Backup (disabled in dev)
+backup:
+  enabled: false

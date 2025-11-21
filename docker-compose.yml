@@ -1,0 +1,160 @@
+services:
+  # Frontend Tier - Vote Application
+  vote:
+    build:
+      context: ./vote
+      dockerfile: Dockerfile
+    container_name: vote
+    ports:
+      - "${VOTE_PORT:-8080}:80"
+    networks:
+      - frontend
+      - backend
+    environment:
+      - OPTION_A=${OPTION_A:-Cats}
+      - OPTION_B=${OPTION_B:-Dogs}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+  # Frontend Tier - Result Application
+  result:
+    build:
+      context: ./result
+      dockerfile: Dockerfile
+    container_name: result
+    ports:
+      - "${RESULT_PORT:-8081}:4000"
+    networks:
+      - frontend
+      - backend
+    environment:
+      - PORT=4000
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_DB=${POSTGRES_DB:-postgres}
+    depends_on:
+      db:
+        condition: service_healthy
+      worker:
+        condition: service_started
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+  # Backend Tier - Worker Service
+  worker:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    container_name: worker
+    networks:
+      - backend
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_DB=${POSTGRES_DB:-postgres}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+    depends_on:
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+  # Backend Tier - Redis Database
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    command: redis-server --requirepass ${REDIS_PASSWORD:-}
+    networks:
+      - backend
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+    volumes:
+      - redis-data:/data
+      - ./healthchecks:/healthchecks
+    healthcheck:
+      test: ["CMD", "sh", "/healthchecks/redis.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+
+  # Backend Tier - PostgreSQL Database
+  db:
+    image: postgres:15-alpine
+    container_name: db
+    networks:
+      - backend
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_DB=${POSTGRES_DB:-postgres}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - ./healthchecks:/healthchecks
+    healthcheck:
+      test: ["CMD", "sh", "/healthchecks/postgres.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+  # Optional Seed Data Service (run with profile)
+  seed-data:
+    build:
+      context: ./seed-data
+      dockerfile: Dockerfile
+    container_name: seed-data
+    networks:
+      - frontend
+    depends_on:
+      vote:
+        condition: service_healthy
+    profiles:
+      - seed
+    restart: "no"
+
+networks:
+  frontend:
+    driver: bridge
+    name: voting-app-frontend
+  backend:
+    driver: bridge
+    name: voting-app-backend
+
+volumes:
+  redis-data:
+    name: voting-app-redis-data
+  db-data:
+    name: voting-app-db-data

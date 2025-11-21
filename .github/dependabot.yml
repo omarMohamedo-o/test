@@ -1,0 +1,74 @@
+version: 2
+updates:
+  # Enable version updates for npm (result service)
+  - package-ecosystem: "npm"
+    directory: "/result"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "javascript"
+    commit-message:
+      prefix: "npm"
+      include: "scope"
+
+  # Enable version updates for pip (vote service)
+  - package-ecosystem: "pip"
+    directory: "/vote"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "python"
+    commit-message:
+      prefix: "pip"
+
+  # Enable version updates for nuget (worker service)
+  - package-ecosystem: "nuget"
+    directory: "/worker"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "dotnet"
+    commit-message:
+      prefix: "nuget"
+
+  # Enable version updates for Docker
+  - package-ecosystem: "docker"
+    directory: "/vote"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "docker"
+
+  - package-ecosystem: "docker"
+    directory: "/result"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "docker"
+
+  - package-ecosystem: "docker"
+    directory: "/worker"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "docker"
+
+  # Enable version updates for GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "ci"

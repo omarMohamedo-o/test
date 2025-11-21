@@ -1,0 +1,11 @@
+---
+# Source: voting-app/templates/namespace.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: voting-app
+  labels:
+    environment: production
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

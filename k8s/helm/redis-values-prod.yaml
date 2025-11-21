@@ -1,0 +1,79 @@
+## Redis Helm Values - Production Environment
+## Using Bitnami Redis Chart
+
+## Architecture
+architecture: standalone # For Minikube. Real prod would use replication
+
+## Authentication
+auth:
+  enabled: true
+  password: "" # Will be auto-generated
+  existingSecret: "redis-secret" # Create this secret separately
+
+## Master configuration
+master:
+  persistence:
+    enabled: true
+    size: 8Gi
+    storageClass: "standard"
+
+  resources:
+    requests:
+      memory: 256Mi
+      cpu: 250m
+    limits:
+      memory: 512Mi
+      cpu: 500m
+
+  ## Security context
+  podSecurityContext:
+    enabled: true
+    fsGroup: 1001
+    runAsUser: 1001
+    runAsNonRoot: true
+
+  containerSecurityContext:
+    enabled: true
+    runAsUser: 1001
+    runAsNonRoot: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    seccompProfile:
+      type: RuntimeDefault
+
+  ## High availability
+  count: 1 # For Minikube. Real prod would use 3+
+
+## Replica configuration (for real production)
+replica:
+  replicaCount: 0 # Disabled for Minikube
+  persistence:
+    enabled: true
+    size: 8Gi
+
+## Network Policy
+networkPolicy:
+  enabled: true
+  allowExternal: false
+  ingressRules:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: vote
+    - from:
+        - podSelector:
+            matchLabels:
+              app: worker
+
+## Metrics (enabled in production)
+metrics:
+  enabled: true
+  resources:
+    requests:
+      memory: 64Mi
+      cpu: 50m
+    limits:
+      memory: 128Mi
+      cpu: 100m

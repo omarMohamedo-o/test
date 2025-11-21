@@ -1,0 +1,521 @@
+name: CI/CD Pipeline
+
+on:
+    push:
+        branches: [main, develop]
+        paths:
+            - "vote/**"
+            - "result/**"
+            - "worker/**"
+            - ".github/workflows/ci-cd.yml"
+    pull_request:
+        branches: [main]
+    workflow_dispatch:
+        inputs:
+            environment:
+                description: "Environment to deploy"
+                required: true
+                default: "dev"
+                type: choice
+                options:
+                    - dev
+                    - prod
+
+env:
+    REGISTRY: ghcr.io
+    IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+    # Job 1: Build and Test Vote Service
+    build-vote:
+        name: Build & Test Vote Service
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+            packages: write
+            security-events: write
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Set lowercase repository name
+              id: repo
+              run: echo "repository=$(echo '${{ github.repository }}' | tr [:upper:] [:lower:])" >> $GITHUB_OUTPUT
+
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@v3
+
+            - name: Log in to GitHub Container Registry
+              uses: docker/login-action@v3
+              with:
+                  registry: ${{ env.REGISTRY }}
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Extract metadata
+              id: meta
+              uses: docker/metadata-action@v5
+              with:
+                  images: ${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}/vote
+                  tags: |
+                      type=sha,prefix=,format=long
+                      type=ref,event=branch
+                      type=ref,event=pr
+                      type=semver,pattern={{version}}
+                      type=raw,value=latest,enable={{is_default_branch}}
+
+            - name: Build Vote image
+              uses: docker/build-push-action@v5
+              with:
+                  context: ./vote
+                  push: false
+                  load: true
+                  tags: |
+                      ${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}/vote:${{ github.sha }}
+                      ${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}/vote:latest
+                  labels: ${{ steps.meta.outputs.labels }}
+                  cache-from: type=gha
+                  cache-to: type=gha,mode=max
+
+            - name: Run Trivy security scan
+              uses: aquasecurity/trivy-action@master
+              with:
+                  image-ref: ${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}/vote:${{ github.sha }}
+                  format: "sarif"
+                  output: "trivy-vote-results.sarif"
+                  severity: "CRITICAL,HIGH"
+
+            - name: Upload Trivy results to GitHub Security
+              uses: github/codeql-action/upload-sarif@v3
+              if: always()
+              with:
+                  sarif_file: "trivy-vote-results.sarif"
+                  category: "vote-image"
+
+            - name: Test Vote service
+              run: |
+                  docker run -d --name vote-test \
+                    -e REDIS_HOST=redis \
+                    -e OPTION_A=Cats \
+                    -e OPTION_B=Dogs \
+                    -p 8080:80 \
+                    ${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}/vote:${{ github.sha }}
+
+                  # Wait for service to start
+                  sleep 5
+
+                  # Test health endpoint
+                  curl -f http://localhost:8080 || exit 1
+
+                  # Cleanup
+                  docker stop vote-test
+                  docker rm vote-test
+
+            - name: Push Vote image
+              if: github.event_name != 'pull_request'
+              uses: docker/build-push-action@v5
+              with:
+                  context: ./vote
+                  push: true
+                  tags: |
+                      ${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}/vote:${{ github.sha }}
+                      ${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}/vote:latest
+                  labels: ${{ steps.meta.outputs.labels }}
+                  cache-from: type=gha
+                  cache-to: type=gha,mode=max
+
+    # Job 2: Build and Test Result Service
+    build-result:
+        name: Build & Test Result Service
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+            packages: write
+            security-events: write
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Set lowercase repository name
+              id: repo
+              run: echo "repository=$(echo '${{ github.repository }}' | tr [:upper:] [:lower:])" >> $GITHUB_OUTPUT
+
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@v3
+
+            - name: Log in to GitHub Container Registry
+              uses: docker/login-action@v3
+              with:
+                  registry: ${{ env.REGISTRY }}
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Extract metadata
+              id: meta
+              uses: docker/metadata-action@v5
+              with:
+                  images: ${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}/result
+                  tags: |
+                      type=sha,prefix=,format=long
+                      type=ref,event=branch
+                      type=ref,event=pr
+                      type=semver,pattern={{version}}
+                      type=raw,value=latest,enable={{is_default_branch}}
+
+            - name: Build Result image
+              uses: docker/build-push-action@v5
+              with:
+                  context: ./result
+                  push: false
+                  load: true
+                  tags: |
+                      ${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}/result:${{ github.sha }}
+                      ${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}/result:latest
+                  labels: ${{ steps.meta.outputs.labels }}
+                  cache-from: type=gha
+                  cache-to: type=gha,mode=max
+
+            - name: Run Trivy security scan
+              uses: aquasecurity/trivy-action@master
+              with:
+                  image-ref: ${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}/result:${{ github.sha }}
+                  format: "sarif"
+                  output: "trivy-result-results.sarif"
+                  severity: "CRITICAL,HIGH"
+
+            - name: Upload Trivy results to GitHub Security
+              uses: github/codeql-action/upload-sarif@v3
+              if: always()
+              with:
+                  sarif_file: "trivy-result-results.sarif"
+                  category: "result-image"
+
+            - name: Test Result service
+              run: |
+                  docker run -d --name result-test \
+                    -e PORT=4000 \
+                    -p 4000:4000 \
+                    ${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}/result:${{ github.sha }}
+
+                  # Wait for service to start
+                  sleep 5
+
+                  # Test health endpoint
+                  curl -f http://localhost:4000 || exit 1
+
+                  # Cleanup
+                  docker stop result-test
+                  docker rm result-test
+
+            - name: Push Result image
+              if: github.event_name != 'pull_request'
+              uses: docker/build-push-action@v5
+              with:
+                  context: ./result
+                  push: true
+                  tags: |
+                      ${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}/result:${{ github.sha }}
+                      ${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}/result:latest
+                  labels: ${{ steps.meta.outputs.labels }}
+                  cache-from: type=gha
+                  cache-to: type=gha,mode=max
+
+    # Job 3: Build and Test Worker Service
+    build-worker:
+        name: Build & Test Worker Service
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+            packages: write
+            security-events: write
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Set lowercase repository name
+              id: repo
+              run: echo "repository=$(echo '${{ github.repository }}' | tr [:upper:] [:lower:])" >> $GITHUB_OUTPUT
+
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@v3
+
+            - name: Log in to GitHub Container Registry
+              uses: docker/login-action@v3
+              with:
+                  registry: ${{ env.REGISTRY }}
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Extract metadata
+              id: meta
+              uses: docker/metadata-action@v5
+              with:
+                  images: ${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}/worker
+                  tags: |
+                      type=sha,prefix=,format=long
+                      type=ref,event=branch
+                      type=ref,event=pr
+                      type=semver,pattern={{version}}
+                      type=raw,value=latest,enable={{is_default_branch}}
+
+            - name: Build Worker image
+              uses: docker/build-push-action@v5
+              with:
+                  context: ./worker
+                  push: false
+                  load: true
+                  tags: |
+                      ${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}/worker:${{ github.sha }}
+                      ${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}/worker:latest
+                  labels: ${{ steps.meta.outputs.labels }}
+                  cache-from: type=gha
+                  cache-to: type=gha,mode=max
+
+            - name: Run Trivy security scan
+              uses: aquasecurity/trivy-action@master
+              with:
+                  image-ref: ${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}/worker:${{ github.sha }}
+                  format: "sarif"
+                  output: "trivy-worker-results.sarif"
+                  severity: "CRITICAL,HIGH"
+
+            - name: Upload Trivy results to GitHub Security
+              uses: github/codeql-action/upload-sarif@v3
+              if: always()
+              with:
+                  sarif_file: "trivy-worker-results.sarif"
+                  category: "worker-image"
+
+            - name: Push Worker image
+              if: github.event_name != 'pull_request'
+              uses: docker/build-push-action@v5
+              with:
+                  context: ./worker
+                  push: true
+                  tags: |
+                      ${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}/worker:${{ github.sha }}
+                      ${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}/worker:latest
+                  labels: ${{ steps.meta.outputs.labels }}
+                  cache-from: type=gha
+                  cache-to: type=gha,mode=max
+
+    # Job 4: Deploy to Kubernetes
+    deploy:
+        name: Deploy to Kubernetes
+        runs-on: ubuntu-latest
+        needs: [build-vote, build-result, build-worker]
+        # Only deploy when manually triggered (workflow_dispatch)
+        # Skip automatic deployment since Minikube is local and unreachable from GitHub Actions
+        if: github.event_name == 'workflow_dispatch'
+        environment:
+            name: ${{ github.event.inputs.environment || 'dev' }}
+            url: ${{ steps.get-url.outputs.url }}
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Set lowercase repository name
+              id: repo
+              run: echo "repository=$(echo '${{ github.repository }}' | tr [:upper:] [:lower:])" >> $GITHUB_OUTPUT
+
+            - name: Set up kubectl
+              uses: azure/setup-kubectl@v3
+              with:
+                  version: "v1.28.0"
+
+            - name: Set up Helm
+              uses: azure/setup-helm@v3
+              with:
+                  version: "v3.12.0"
+
+            - name: Configure kubectl
+              run: |
+                  # In production, use secrets for kubeconfig
+                  # For Minikube local testing, this would be configured differently
+                  echo "${{ secrets.KUBECONFIG }}" | base64 -d > kubeconfig
+                  export KUBECONFIG=./kubeconfig
+
+            - name: Add Helm repositories
+              run: |
+                  helm repo add bitnami https://charts.bitnami.com/bitnami
+                  helm repo update
+
+            - name: Deploy PostgreSQL via Helm
+              run: |
+                  helm upgrade --install postgresql bitnami/postgresql \
+                    --namespace voting-app \
+                    --create-namespace \
+                    --values k8s/helm/postgresql-values-${{ github.event.inputs.environment || 'dev' }}.yaml \
+                    --wait \
+                    --timeout 5m
+
+            - name: Deploy Redis via Helm
+              run: |
+                  helm upgrade --install redis bitnami/redis \
+                    --namespace voting-app \
+                    --values k8s/helm/redis-values-${{ github.event.inputs.environment || 'dev' }}.yaml \
+                    --wait \
+                    --timeout 5m
+
+            - name: Deploy Voting App via Helm
+              run: |
+                  helm upgrade --install voting-app k8s/helm/voting-app \
+                    --namespace voting-app \
+                    --values k8s/helm/voting-app/values-${{ github.event.inputs.environment || 'dev' }}.yaml \
+                    --set vote.image.tag=${{ github.sha }} \
+                    --set result.image.tag=${{ github.sha }} \
+                    --set worker.image.tag=${{ github.sha }} \
+                    --set vote.image.repository=${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}/vote \
+                    --set result.image.repository=${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}/result \
+                    --set worker.image.repository=${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}/worker \
+                    --wait \
+                    --timeout 5m
+
+            - name: Get deployment URLs
+              id: get-url
+              run: |
+                  echo "url=http://vote.local" >> $GITHUB_OUTPUT
+
+            - name: Deployment summary
+              run: |
+                  echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
+                  echo "" >> $GITHUB_STEP_SUMMARY
+                  echo "**Environment:** ${{ github.event.inputs.environment || 'dev' }}" >> $GITHUB_STEP_SUMMARY
+                  echo "**Image Tag:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+                  echo "**Vote URL:** http://vote.local" >> $GITHUB_STEP_SUMMARY
+                  echo "**Result URL:** http://result.local" >> $GITHUB_STEP_SUMMARY
+                  echo "" >> $GITHUB_STEP_SUMMARY
+                  echo "### Deployed Services" >> $GITHUB_STEP_SUMMARY
+                  kubectl get pods -n voting-app >> $GITHUB_STEP_SUMMARY
+
+    # Job 5: Smoke Tests
+    smoke-tests:
+        name: Run Smoke Tests
+        runs-on: ubuntu-latest
+        needs: [deploy]
+        # Only run smoke tests if deployment actually happened
+        if: github.event_name == 'workflow_dispatch'
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Configure kubectl
+              run: |
+                  echo "${{ secrets.KUBECONFIG }}" | base64 -d > kubeconfig
+                  export KUBECONFIG=./kubeconfig
+
+            - name: Wait for pods to be ready
+              run: |
+                  kubectl wait --for=condition=ready pod \
+                    -l app=vote \
+                    -n voting-app \
+                    --timeout=300s
+
+                  kubectl wait --for=condition=ready pod \
+                    -l app=result \
+                    -n voting-app \
+                    --timeout=300s
+
+            - name: Test Vote service endpoint
+              run: |
+                  # Port forward for testing
+                  kubectl port-forward -n voting-app svc/vote 8080:80 &
+                  PF_PID=$!
+                  sleep 5
+
+                  # Test GET request
+                  response=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080)
+                  if [ "$response" != "200" ]; then
+                    echo "❌ Vote service health check failed: HTTP $response"
+                    kill $PF_PID
+                    exit 1
+                  fi
+                  echo "✅ Vote service is healthy"
+
+                  # Test POST request (vote)
+                  response=$(curl -s -o /dev/null -w "%{http_code}" -X POST -d "vote=a" http://localhost:8080)
+                  if [ "$response" != "200" ]; then
+                    echo "❌ Vote submission failed: HTTP $response"
+                    kill $PF_PID
+                    exit 1
+                  fi
+                  echo "✅ Vote submission successful"
+
+                  kill $PF_PID
+
+            - name: Test Result service endpoint
+              run: |
+                  # Port forward for testing
+                  kubectl port-forward -n voting-app svc/result 4000:4000 &
+                  PF_PID=$!
+                  sleep 5
+
+                  # Test GET request
+                  response=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:4000)
+                  if [ "$response" != "200" ]; then
+                    echo "❌ Result service health check failed: HTTP $response"
+                    kill $PF_PID
+                    exit 1
+                  fi
+                  echo "✅ Result service is healthy"
+
+                  kill $PF_PID
+
+            - name: Test database connectivity
+              run: |
+                  # Test PostgreSQL
+                  kubectl exec -n voting-app postgres-0 -- psql -U postgres -d postgres -c "SELECT 1" > /dev/null
+                  if [ $? -eq 0 ]; then
+                    echo "✅ PostgreSQL is accessible"
+                  else
+                    echo "❌ PostgreSQL connection failed"
+                    exit 1
+                  fi
+
+                  # Test Redis
+                  kubectl exec -n voting-app redis-0 -- redis-cli ping | grep -q "PONG"
+                  if [ $? -eq 0 ]; then
+                    echo "✅ Redis is accessible"
+                  else
+                    echo "❌ Redis connection failed"
+                    exit 1
+                  fi
+
+            - name: Smoke test summary
+              run: |
+                  echo "## Smoke Test Results ✅" >> $GITHUB_STEP_SUMMARY
+                  echo "" >> $GITHUB_STEP_SUMMARY
+                  echo "All smoke tests passed successfully!" >> $GITHUB_STEP_SUMMARY
+                  echo "" >> $GITHUB_STEP_SUMMARY
+                  echo "- ✅ Vote service health check" >> $GITHUB_STEP_SUMMARY
+                  echo "- ✅ Vote submission test" >> $GITHUB_STEP_SUMMARY
+                  echo "- ✅ Result service health check" >> $GITHUB_STEP_SUMMARY
+                  echo "- ✅ PostgreSQL connectivity" >> $GITHUB_STEP_SUMMARY
+                  echo "- ✅ Redis connectivity" >> $GITHUB_STEP_SUMMARY
+
+    # Job 6: Notify on completion
+    notify:
+        name: Send Notification
+        runs-on: ubuntu-latest
+        needs: [smoke-tests]
+        if: always()
+
+        steps:
+            - name: Send success notification
+              if: needs.smoke-tests.result == 'success'
+              run: |
+                  echo "🎉 Deployment successful!"
+                  echo "Environment: ${{ github.event.inputs.environment || 'dev' }}"
+                  echo "Commit: ${{ github.sha }}"
+
+            - name: Send failure notification
+              if: needs.smoke-tests.result != 'success'
+              run: |
+                  echo "❌ Deployment failed!"
+                  echo "Check the logs for details"
+                  exit 1

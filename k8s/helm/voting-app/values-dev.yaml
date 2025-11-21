@@ -1,0 +1,61 @@
+# Development Environment Values
+environment: dev
+
+# Reduced replicas for dev
+vote:
+  replicaCount: 1
+
+result:
+  replicaCount: 1
+
+worker:
+  replicaCount: 1
+
+# External databases (deployed separately via Helm)
+postgresql:
+  enabled: false # Using external Helm chart
+  host: postgresql.voting-app.svc.cluster.local
+  port: 5432
+  auth:
+    username: postgres
+    password: postgres
+    database: postgres
+
+redis:
+  enabled: false # Using external Helm chart
+  host: redis-master.voting-app.svc.cluster.local
+  port: 6379
+
+# Resource limits for dev
+resources:
+  vote:
+    requests:
+      memory: 64Mi
+      cpu: 50m
+    limits:
+      memory: 128Mi
+      cpu: 100m
+
+  result:
+    requests:
+      memory: 64Mi
+      cpu: 50m
+    limits:
+      memory: 128Mi
+      cpu: 100m
+
+  worker:
+    requests:
+      memory: 128Mi
+      cpu: 100m
+    limits:
+      memory: 256Mi
+      cpu: 250m
+
+# Ingress configuration
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    vote: vote.local
+    result: result.local

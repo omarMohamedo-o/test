@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgresql-metrics
+  namespace: voting-app
+  labels:
+    app: postgresql
+    app.kubernetes.io/component: metrics
+spec:
+  type: ClusterIP
+  ports:
+    - name: metrics
+      port: 9187
+      targetPort: metrics
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: postgresql
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: postgresql
+  namespace: voting-app
+  labels:
+    app: postgresql
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgresql
+      app.kubernetes.io/component: metrics
+  endpoints:
+    - port: metrics
+      interval: 30s
+      scrapeTimeout: 10s

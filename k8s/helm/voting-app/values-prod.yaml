@@ -1,0 +1,65 @@
+# Production Environment Values
+environment: prod
+
+# Increased replicas for high availability
+vote:
+  replicaCount: 2
+
+result:
+  replicaCount: 2
+
+worker:
+  replicaCount: 2
+
+# External databases (deployed separately via Helm)
+postgresql:
+  enabled: false # Using external Helm chart
+  host: postgresql.voting-app.svc.cluster.local
+  port: 5432
+  auth:
+    username: postgres
+    password: "" # Use secret
+    existingSecret: postgresql-secret
+    database: postgres
+
+redis:
+  enabled: false # Using external Helm chart
+  host: redis-master.voting-app.svc.cluster.local
+  port: 6379
+  auth:
+    enabled: true
+    existingSecret: redis-secret
+
+# Higher resource limits for production
+resources:
+  vote:
+    requests:
+      memory: 128Mi
+      cpu: 100m
+    limits:
+      memory: 256Mi
+      cpu: 250m
+
+  result:
+    requests:
+      memory: 128Mi
+      cpu: 100m
+    limits:
+      memory: 256Mi
+      cpu: 250m
+
+  worker:
+    requests:
+      memory: 256Mi
+      cpu: 250m
+    limits:
+      memory: 512Mi
+      cpu: 500m
+
+# Ingress configuration
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    vote: vote.local
+    result: result.local

@@ -1,0 +1,55 @@
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: seed
+  namespace: voting-app
+  labels:
+    app: seed
+spec:
+  restartPolicy: Never
+  containers:
+    - name: seed
+      image: curlimages/curl:latest
+      command: ["/bin/sh"]
+      args:
+        - -c
+        - |
+          echo "Starting vote generation..."
+          echo "Target: http://vote"
+          echo "Generating 3000 votes: 2000 for Cats (a), 1000 for Dogs (b)"
+
+          # Wait for vote service to be ready
+          until curl -s http://vote > /dev/null; do
+            echo "Waiting for vote service..."
+            sleep 2
+          done
+
+          echo "Vote service is ready!"
+          echo "Generating votes..."
+
+          # Generate 2000 votes for option A (Cats)
+          echo "Phase 1: Generating 1000 votes for Cats..."
+          for i in $(seq 1 1000); do
+            curl -s -X POST -d "vote=a" http://vote > /dev/null
+            echo "Vote $i: a"
+            sleep 0.1
+          done
+
+          # Generate 1000 votes for option B (Dogs)
+          echo "Phase 2: Generating 1000 votes for Dogs..."
+          for i in $(seq 1001 2000); do
+            curl -s -X POST -d "vote=b" http://vote > /dev/null
+            echo "Vote $i: b"
+            sleep 0.1
+          done
+
+          # Generate another 1000 votes for option A (Cats)
+          echo "Phase 3: Generating 1000 more votes for Cats..."
+          for i in $(seq 2001 3000); do
+            curl -s -X POST -d "vote=a" http://vote > /dev/null
+            echo "Vote $i: a"
+            sleep 0.1
+          done
+
+          echo "Seed complete! Generated 3000 votes (2000 Cats, 1000 Dogs)"

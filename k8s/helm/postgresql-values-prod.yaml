@@ -1,0 +1,83 @@
+## PostgreSQL Helm Values - Production Environment
+## Using Bitnami PostgreSQL Chart
+
+## Authentication - Use secrets in production
+auth:
+  username: postgres
+  password: "" # Will be auto-generated
+  database: postgres
+  existingSecret: "postgresql-secret" # Create this secret separately
+
+## Primary configuration
+primary:
+  persistence:
+    enabled: true
+    size: 20Gi
+    storageClass: "standard"
+
+  resources:
+    requests:
+      memory: 512Mi
+      cpu: 500m
+    limits:
+      memory: 1Gi
+      cpu: 1000m
+
+  ## Security context
+  podSecurityContext:
+    enabled: true
+    fsGroup: 1001
+    runAsUser: 1001
+    runAsNonRoot: true
+
+  containerSecurityContext:
+    enabled: true
+    runAsUser: 1001
+    runAsNonRoot: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    seccompProfile:
+      type: RuntimeDefault
+
+  ## High availability
+  replicaCount: 1 # For Minikube, in real prod use 2+
+
+## Read replicas for production
+readReplicas:
+  replicaCount: 0 # Disabled for Minikube
+
+## Network Policy
+networkPolicy:
+  enabled: true
+  allowExternal: false
+  ingressRules:
+    primaryAccessOnlyFrom:
+      enabled: true
+      namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: voting-app
+      podSelector:
+        matchLabels:
+          app: worker
+    customRules:
+      - from:
+          - podSelector:
+              matchLabels:
+                app: result
+
+## Metrics (enabled in production)
+metrics:
+  enabled: true
+  resources:
+    requests:
+      memory: 64Mi
+      cpu: 50m
+    limits:
+      memory: 128Mi
+      cpu: 100m
+
+## Backup (enabled in production)
+backup:
+  enabled: false # Would be true with proper storage in real production

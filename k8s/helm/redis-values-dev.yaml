@@ -1,0 +1,60 @@
+## Redis Helm Values - Development Environment
+## Using Bitnami Redis Chart
+
+## Architecture
+architecture: standalone # Use standalone for dev
+
+## Authentication
+auth:
+  enabled: false # Disabled for dev simplicity
+
+## Master configuration
+master:
+  persistence:
+    enabled: true
+    size: 2Gi
+    storageClass: "standard"
+
+  resources:
+    requests:
+      memory: 128Mi
+      cpu: 100m
+    limits:
+      memory: 256Mi
+      cpu: 200m
+
+  ## Security context
+  podSecurityContext:
+    enabled: true
+    fsGroup: 1001
+    runAsUser: 1001
+    runAsNonRoot: true
+
+  containerSecurityContext:
+    enabled: true
+    runAsUser: 1001
+    runAsNonRoot: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    seccompProfile:
+      type: RuntimeDefault
+
+## Network Policy
+networkPolicy:
+  enabled: true
+  allowExternal: false
+  ingressRules:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: vote
+    - from:
+        - podSelector:
+            matchLabels:
+              app: worker
+
+## Metrics
+metrics:
+  enabled: false # Disabled in dev
