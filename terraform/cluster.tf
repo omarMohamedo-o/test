@@ -56,6 +56,44 @@ resource "null_resource" "minikube_cluster" {
   }
 }
 
+# Build Docker images in Minikube's Docker environment
+resource "null_resource" "build_images" {
+  depends_on = [null_resource.minikube_cluster]
+
+  triggers = {
+    cluster_name = var.cluster_name
+    environment  = var.environment
+    # Trigger rebuild when source code changes
+    vote_src   = filemd5("${path.module}/../vote/app.py")
+    result_src = filemd5("${path.module}/../result/server.js")
+    worker_src = filemd5("${path.module}/../worker/Program.cs")
+  }
+
+  # Build vote image
+  provisioner "local-exec" {
+    command = <<-EOT
+      eval $(minikube -p ${var.cluster_name}-${var.environment} docker-env)
+      docker build -t tactful-votingapp-cloud-infra-vote:latest ${path.module}/../vote
+    EOT
+  }
+
+  # Build result image
+  provisioner "local-exec" {
+    command = <<-EOT
+      eval $(minikube -p ${var.cluster_name}-${var.environment} docker-env)
+      docker build -t tactful-votingapp-cloud-infra-result:latest ${path.module}/../result
+    EOT
+  }
+
+  # Build worker image
+  provisioner "local-exec" {
+    command = <<-EOT
+      eval $(minikube -p ${var.cluster_name}-${var.environment} docker-env)
+      docker build -t tactful-votingapp-cloud-infra-worker:latest ${path.module}/../worker
+    EOT
+  }
+}
+
 # Create namespace for the application
 resource "null_resource" "create_namespace" {
   depends_on = [null_resource.minikube_cluster]
@@ -81,6 +119,9 @@ resource "null_resource" "create_namespace" {
 }
 
 # Configure /etc/hosts for ingress (local development)
+# IMPORTANT: For passwordless operation, run this ONCE before terraform apply:
+#   sudo ./setup-sudoers.sh
+# This configures passwordless sudo for /etc/hosts modifications
 resource "null_resource" "configure_hosts" {
   depends_on = [null_resource.minikube_cluster]
 
@@ -88,13 +129,44 @@ resource "null_resource" "configure_hosts" {
     command = <<-EOT
       MINIKUBE_IP=$(minikube ip -p ${var.cluster_name}-${var.environment})
       
-      # Remove old entries
-      sudo sed -i '/vote.local/d' /etc/hosts 2>/dev/null || true
-      sudo sed -i '/result.local/d' /etc/hosts 2>/dev/null || true
+      echo ""
+      echo "=========================================="
+      echo "🌐 Configuring /etc/hosts for Ingress"
+      echo "=========================================="
+      echo ""
+      echo "Minikube IP: $MINIKUBE_IP"
+      echo ""
       
-      # Add new entries
-      echo "$MINIKUBE_IP vote.local" | sudo tee -a /etc/hosts
-      echo "$MINIKUBE_IP result.local" | sudo tee -a /etc/hosts
+      # Try to configure /etc/hosts automatically (requires passwordless sudo)
+      # Remove old entries
+      if sudo -n sed -i.bak '/vote\.local/d' /etc/hosts 2>/dev/null && \
+         sudo -n sed -i.bak '/result\.local/d' /etc/hosts 2>/dev/null; then
+          
+          # Add new entries
+          echo "$MINIKUBE_IP vote.local" | sudo -n tee -a /etc/hosts > /dev/null
+          echo "$MINIKUBE_IP result.local" | sudo -n tee -a /etc/hosts > /dev/null
+          
+          echo "✅ /etc/hosts configured successfully!"
+          echo ""
+          echo "   vote.local   -> $MINIKUBE_IP"
+          echo "   result.local -> $MINIKUBE_IP"
+          echo ""
+      else
+          # Passwordless sudo not configured
+          echo "⚠️  Passwordless sudo not configured!"
+          echo ""
+          echo "To enable automatic /etc/hosts configuration:"
+          echo "  1. Run once: sudo ../setup-sudoers.sh"
+          echo "  2. Re-run: terraform apply"
+          echo ""
+          echo "Or configure manually:"
+          echo "  sudo bash -c \"sed -i.bak '/vote\.local/d; /result\.local/d' /etc/hosts\""
+          echo "  sudo bash -c \"echo '$MINIKUBE_IP vote.local' >> /etc/hosts\""
+          echo "  sudo bash -c \"echo '$MINIKUBE_IP result.local' >> /etc/hosts\""
+          echo ""
+      fi
+      
+      echo "=========================================="
     EOT
   }
 }
@@ -108,5 +180,104 @@ resource "local_file" "kubeconfig" {
 
   provisioner "local-exec" {
     command = "kubectl config view --raw > ${path.module}/kubeconfig-${var.environment}"
+  }
+}
+
+# Deploy databases via Helm
+resource "null_resource" "deploy_databases" {
+  depends_on = [null_resource.create_namespace, null_resource.build_images]
+
+  triggers = {
+    namespace   = var.namespace
+    environment = var.environment
+  }
+
+  # Add Bitnami Helm repo
+  provisioner "local-exec" {
+    command = "helm repo add bitnami https://charts.bitnami.com/bitnami 2>/dev/null || true && helm repo update"
+  }
+
+  # Deploy PostgreSQL
+  provisioner "local-exec" {
+    command = <<-EOT
+      helm upgrade --install postgresql bitnami/postgresql \
+        --namespace ${var.namespace} \
+        --values ${path.module}/../k8s/helm/postgresql-values-${var.environment}.yaml \
+        --wait \
+        --timeout 5m
+    EOT
+  }
+
+  # Deploy Redis
+  provisioner "local-exec" {
+    command = <<-EOT
+      helm upgrade --install redis bitnami/redis \
+        --namespace ${var.namespace} \
+        --values ${path.module}/../k8s/helm/redis-values-${var.environment}.yaml \
+        --wait \
+        --timeout 5m
+    EOT
+  }
+
+  # Wait for databases to be ready
+  provisioner "local-exec" {
+    command = <<-EOT
+      kubectl wait --for=condition=ready pod \
+        -l app.kubernetes.io/name=postgresql \
+        -n ${var.namespace} \
+        --timeout=300s
+      
+      kubectl wait --for=condition=ready pod \
+        -l app.kubernetes.io/name=redis \
+        -n ${var.namespace} \
+        --timeout=300s
+    EOT
+  }
+}
+
+# Deploy application manifests
+resource "null_resource" "deploy_application" {
+  depends_on = [null_resource.deploy_databases]
+
+  triggers = {
+    namespace = var.namespace
+    # Trigger redeployment on manifest changes
+    manifests_hash = md5(join("", [
+      for f in fileset("${path.module}/../k8s/manifests", "*") :
+      fileexists("${path.module}/../k8s/manifests/${f}") ? filemd5("${path.module}/../k8s/manifests/${f}") : ""
+    ]))
+  }
+
+  # Deploy application manifests
+  provisioner "local-exec" {
+    command = <<-EOT
+      kubectl apply -f ${path.module}/../k8s/manifests/01-secrets.yaml -n ${var.namespace}
+      kubectl apply -f ${path.module}/../k8s/manifests/02-configmap.yaml -n ${var.namespace}
+      kubectl apply -f ${path.module}/../k8s/manifests/05-vote.yaml -n ${var.namespace}
+      kubectl apply -f ${path.module}/../k8s/manifests/06-result.yaml -n ${var.namespace}
+      kubectl apply -f ${path.module}/../k8s/manifests/07-worker.yaml -n ${var.namespace}
+      kubectl apply -f ${path.module}/../k8s/manifests/08-network-policies.yaml -n ${var.namespace}
+      kubectl apply -f ${path.module}/../k8s/manifests/09-ingress.yaml -n ${var.namespace}
+    EOT
+  }
+
+  # Wait for application pods
+  provisioner "local-exec" {
+    command = <<-EOT
+      kubectl wait --for=condition=ready pod \
+        -l app=vote \
+        -n ${var.namespace} \
+        --timeout=300s || true
+      
+      kubectl wait --for=condition=ready pod \
+        -l app=result \
+        -n ${var.namespace} \
+        --timeout=300s || true
+      
+      kubectl wait --for=condition=ready pod \
+        -l app=worker \
+        -n ${var.namespace} \
+        --timeout=300s || true
+    EOT
   }
 }

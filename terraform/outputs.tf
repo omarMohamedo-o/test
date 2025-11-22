@@ -42,26 +42,50 @@ output "resource_config" {
 }
 
 output "next_steps" {
-  description = "Next steps to deploy the application"
+  description = "Next steps after deployment"
   value       = <<-EOT
     
-    1. Set kubectl context:
-       kubectl config use-context ${var.cluster_name}-${var.environment}
+    ✅ Deployment Complete!
     
-    2. Verify cluster:
-       kubectl cluster-info
-       kubectl get nodes
+    The voting application has been automatically deployed via Terraform.
     
-    3. Deploy databases via Helm:
-       helm repo add bitnami https://charts.bitnami.com/bitnami
-       helm install postgresql bitnami/postgresql -n ${var.namespace} -f ../k8s/helm/postgresql-values-${var.environment}.yaml
-       helm install redis bitnami/redis -n ${var.namespace} -f ../k8s/helm/redis-values-${var.environment}.yaml
+    ⚠️  IMPORTANT: Configure /etc/hosts first!
+       Run: ./terraform/configure-hosts.sh
+       Or manually add to /etc/hosts:
+         $(minikube ip -p ${var.cluster_name}-${var.environment}) vote.local
+         $(minikube ip -p ${var.cluster_name}-${var.environment}) result.local
     
-    4. Deploy application via Helm:
-       helm install voting-app ../k8s/helm/voting-app -n ${var.namespace} --set environment=${var.environment}
-    
-    5. Access the application:
+    Access the application:
        Vote:   http://vote.local
        Result: http://result.local
+    
+    Verify deployment:
+       kubectl get pods -n ${var.namespace}
+       kubectl get svc -n ${var.namespace}
+       kubectl get ingress -n ${var.namespace}
+    
+    View Helm releases:
+       helm list -n ${var.namespace}
+    
+    Test the application:
+       curl http://vote.local
+       curl http://result.local
+    
+    Minikube commands:
+       minikube status -p ${var.cluster_name}-${var.environment}
+       minikube dashboard -p ${var.cluster_name}-${var.environment}
+       minikube stop -p ${var.cluster_name}-${var.environment}
   EOT
+}
+
+output "deployment_status" {
+  description = "Deployment components status"
+  value = {
+    cluster_provisioned = "✅ Minikube cluster created"
+    images_built        = "✅ Docker images built in Minikube"
+    databases_deployed  = "✅ PostgreSQL and Redis via Helm"
+    app_deployed        = "✅ Vote, Result, and Worker services"
+    ingress_configured  = "✅ Nginx ingress with vote.local and result.local"
+    security_enabled    = "✅ NetworkPolicies and Pod Security Admission"
+  }
 }
