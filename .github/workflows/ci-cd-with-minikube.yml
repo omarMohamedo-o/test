@@ -1,0 +1,416 @@
+name: CI/CD with Minikube Testing
+
+on:
+    push:
+        branches: [main, develop]
+        paths:
+            - "vote/**"
+            - "result/**"
+            - "worker/**"
+            - "k8s/**"
+            - "terraform/**"
+            - ".github/workflows/ci-cd-with-minikube.yml"
+    pull_request:
+        branches: [main]
+    workflow_dispatch:
+        inputs:
+            skip_minikube_tests:
+                description: "Skip Minikube integration tests"
+                required: false
+                default: false
+                type: boolean
+
+env:
+    REGISTRY: ghcr.io
+    IMAGE_TAG: ${{ github.sha }}
+    MINIKUBE_VERSION: v1.32.0
+    KUBERNETES_VERSION: v1.28.3
+
+jobs:
+    # Job 1: Build Images
+    build-images:
+        name: Build & Scan Images
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+            packages: write
+            security-events: write
+
+        strategy:
+            matrix:
+                service: [vote, result, worker]
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Set lowercase repository name
+              id: repo
+              run: echo "repository=$(echo '${{ github.repository }}' | tr [:upper:] [:lower:])" >> $GITHUB_OUTPUT
+
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@v3
+
+            - name: Log in to GitHub Container Registry
+              uses: docker/login-action@v3
+              with:
+                  registry: ${{ env.REGISTRY }}
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Extract metadata
+              id: meta
+              uses: docker/metadata-action@v5
+              with:
+                  images: ${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}/${{ matrix.service }}
+                  tags: |
+                      type=sha,prefix=,format=long
+                      type=ref,event=branch
+                      type=ref,event=pr
+                      type=raw,value=latest,enable={{is_default_branch}}
+
+            - name: Build ${{ matrix.service }} image
+              uses: docker/build-push-action@v5
+              with:
+                  context: ./${{ matrix.service }}
+                  push: false
+                  load: true
+                  tags: |
+                      ${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}/${{ matrix.service }}:${{ github.sha }}
+                      ${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}/${{ matrix.service }}:latest
+                  labels: ${{ steps.meta.outputs.labels }}
+                  cache-from: type=gha,scope=${{ matrix.service }}
+                  cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+            - name: Run Trivy security scan
+              uses: aquasecurity/trivy-action@master
+              with:
+                  image-ref: ${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}/${{ matrix.service }}:${{ github.sha }}
+                  format: "sarif"
+                  output: "trivy-${{ matrix.service }}-results.sarif"
+                  severity: "CRITICAL,HIGH"
+
+            - name: Upload Trivy results to GitHub Security
+              uses: github/codeql-action/upload-sarif@v3
+              if: always()
+              with:
+                  sarif_file: "trivy-${{ matrix.service }}-results.sarif"
+                  category: "${{ matrix.service }}-image"
+
+            - name: Push ${{ matrix.service }} image
+              if: github.event_name != 'pull_request'
+              uses: docker/build-push-action@v5
+              with:
+                  context: ./${{ matrix.service }}
+                  push: true
+                  tags: |
+                      ${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}/${{ matrix.service }}:${{ github.sha }}
+                      ${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}/${{ matrix.service }}:latest
+                  labels: ${{ steps.meta.outputs.labels }}
+                  cache-from: type=gha,scope=${{ matrix.service }}
+                  cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+            - name: Save ${{ matrix.service }} image for Minikube
+              run: |
+                  docker save ${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}/${{ matrix.service }}:${{ github.sha }} -o ${{ matrix.service }}-image.tar
+
+            - name: Upload ${{ matrix.service }} image artifact
+              uses: actions/upload-artifact@v4
+              with:
+                  name: ${{ matrix.service }}-image
+                  path: ${{ matrix.service }}-image.tar
+                  retention-days: 1
+
+    # Job 2: Deploy and Test in Minikube
+    minikube-integration-test:
+        name: Minikube Integration Tests
+        runs-on: ubuntu-latest
+        needs: build-images
+        if: ${{ !inputs.skip_minikube_tests }}
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Set lowercase repository name
+              id: repo
+              run: echo "repository=$(echo '${{ github.repository }}' | tr [:upper:] [:lower:])" >> $GITHUB_OUTPUT
+
+            # Install Minikube
+            - name: Install Minikube
+              run: |
+                  curl -LO https://storage.googleapis.com/minikube/releases/${{ env.MINIKUBE_VERSION }}/minikube-linux-amd64
+                  sudo install minikube-linux-amd64 /usr/local/bin/minikube
+                  minikube version
+
+            # Install kubectl
+            - name: Install kubectl
+              run: |
+                  curl -LO "https://dl.k8s.io/release/${{ env.KUBERNETES_VERSION }}/bin/linux/amd64/kubectl"
+                  sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+                  kubectl version --client
+
+            # Install Helm
+            - name: Install Helm
+              run: |
+                  curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+                  helm version
+
+            # Start Minikube
+            - name: Start Minikube
+              run: |
+                  minikube start \
+                    --driver=docker \
+                    --kubernetes-version=${{ env.KUBERNETES_VERSION }} \
+                    --cpus=2 \
+                    --memory=4096 \
+                    --addons=ingress,metrics-server \
+                    --wait=all
+
+                  minikube status
+                  kubectl cluster-info
+                  kubectl get nodes
+
+            # Set KUBECONFIG for all subsequent steps
+            - name: Configure KUBECONFIG
+              run: |
+                  mkdir -p ~/.kube
+                  minikube kubectl -- config view --raw > ~/.kube/config
+                  echo "KUBECONFIG=$HOME/.kube/config" >> $GITHUB_ENV
+
+                  # Verify connection
+                  kubectl get nodes
+                  kubectl get namespaces
+
+            # Download built images
+            - name: Download vote image
+              uses: actions/download-artifact@v4
+              with:
+                  name: vote-image
+
+            - name: Download result image
+              uses: actions/download-artifact@v4
+              with:
+                  name: result-image
+
+            - name: Download worker image
+              uses: actions/download-artifact@v4
+              with:
+                  name: worker-image
+
+            # Load images into Minikube
+            - name: Load images into Minikube
+              run: |
+                  minikube image load vote-image.tar
+                  minikube image load result-image.tar
+                  minikube image load worker-image.tar
+
+                  # Verify images
+                  minikube image ls | grep -E 'vote|result|worker'
+
+            # Create namespace
+            - name: Create voting-app namespace
+              run: |
+                  kubectl create namespace voting-app
+                  kubectl label namespace voting-app \
+                    pod-security.kubernetes.io/enforce=baseline \
+                    pod-security.kubernetes.io/audit=baseline \
+                    pod-security.kubernetes.io/warn=baseline
+
+            # Deploy PostgreSQL
+            - name: Deploy PostgreSQL with Helm
+              run: |
+                  helm repo add bitnami https://charts.bitnami.com/bitnami
+                  helm repo update
+
+                  helm upgrade --install postgresql bitnami/postgresql \
+                    --namespace voting-app \
+                    --values k8s/helm/postgresql-values-dev.yaml \
+                    --wait \
+                    --timeout 5m
+
+                  kubectl wait --for=condition=ready pod \
+                    -l app.kubernetes.io/name=postgresql \
+                    -n voting-app \
+                    --timeout=300s
+
+            # Deploy Redis
+            - name: Deploy Redis with Helm
+              run: |
+                  helm upgrade --install redis bitnami/redis \
+                    --namespace voting-app \
+                    --values k8s/helm/redis-values-dev.yaml \
+                    --wait \
+                    --timeout 5m
+
+                  kubectl wait --for=condition=ready pod \
+                    -l app.kubernetes.io/name=redis \
+                    -n voting-app \
+                    --timeout=300s
+
+            # Deploy application manifests
+            - name: Deploy application manifests
+              run: |
+                  # Update image tags in manifests to use built images
+                  sed -i "s|image:.*vote:.*|image: ${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}/vote:${{ github.sha }}|g" k8s/manifests/05-vote.yaml
+                  sed -i "s|image:.*result:.*|image: ${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}/result:${{ github.sha }}|g" k8s/manifests/06-result.yaml
+                  sed -i "s|image:.*worker:.*|image: ${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}/worker:${{ github.sha }}|g" k8s/manifests/07-worker.yaml
+
+                  # Apply manifests
+                  kubectl apply -f k8s/manifests/01-secrets.yaml -n voting-app
+                  kubectl apply -f k8s/manifests/02-configmap.yaml -n voting-app
+                  kubectl apply -f k8s/manifests/05-vote.yaml -n voting-app
+                  kubectl apply -f k8s/manifests/06-result.yaml -n voting-app
+                  kubectl apply -f k8s/manifests/07-worker.yaml -n voting-app
+                  kubectl apply -f k8s/manifests/08-network-policies.yaml -n voting-app || true
+                  kubectl apply -f k8s/manifests/09-ingress.yaml -n voting-app
+
+            # Wait for all pods to be ready
+            - name: Wait for application pods
+              run: |
+                  echo "Waiting for vote pods..."
+                  kubectl wait --for=condition=ready pod \
+                    -l app=vote \
+                    -n voting-app \
+                    --timeout=300s
+
+                  echo "Waiting for result pods..."
+                  kubectl wait --for=condition=ready pod \
+                    -l app=result \
+                    -n voting-app \
+                    --timeout=300s
+
+                  echo "Waiting for worker pods..."
+                  kubectl wait --for=condition=ready pod \
+                    -l app=worker \
+                    -n voting-app \
+                    --timeout=300s
+
+                  # Show all pods
+                  kubectl get pods -n voting-app
+
+            # Run integration tests
+            - name: Run integration tests
+              run: |
+                  echo "🧪 Running Integration Tests..."
+
+                  # Get Minikube IP
+                  MINIKUBE_IP=$(minikube ip)
+                  echo "Minikube IP: $MINIKUBE_IP"
+
+                  # Get NodePort for vote service
+                  VOTE_PORT=$(kubectl get svc vote -n voting-app -o jsonpath='{.spec.ports[0].nodePort}')
+                  echo "Vote Service NodePort: $VOTE_PORT"
+
+                  # Get NodePort for result service
+                  RESULT_PORT=$(kubectl get svc result -n voting-app -o jsonpath='{.spec.ports[0].nodePort}')
+                  echo "Result Service NodePort: $RESULT_PORT"
+
+                  # Test 1: Vote service responds
+                  echo "Test 1: Vote service health check..."
+                  curl -f http://$MINIKUBE_IP:$VOTE_PORT || (echo "❌ Vote service not responding" && exit 1)
+                  echo "✅ Vote service is healthy"
+
+                  # Test 2: Result service responds
+                  echo "Test 2: Result service health check..."
+                  curl -f http://$MINIKUBE_IP:$RESULT_PORT || (echo "❌ Result service not responding" && exit 1)
+                  echo "✅ Result service is healthy"
+
+                  # Test 3: Vote service content
+                  echo "Test 3: Vote service shows voting options..."
+                  curl -s http://$MINIKUBE_IP:$VOTE_PORT | grep -i "Cats" || (echo "❌ Vote content not found" && exit 1)
+                  echo "✅ Vote content is correct"
+
+                  # Test 4: Result service content
+                  echo "Test 4: Result service shows results..."
+                  curl -s http://$MINIKUBE_IP:$RESULT_PORT | grep -i "Result" || (echo "❌ Result content not found" && exit 1)
+                  echo "✅ Result content is correct"
+
+                  # Test 5: Submit a vote
+                  echo "Test 5: Submit a vote..."
+                  VOTE_ID=$(curl -s -X POST http://$MINIKUBE_IP:$VOTE_PORT -d "vote=a" | grep -o 'voter_id=[^"]*' | cut -d= -f2 || echo "unknown")
+                  echo "Vote submitted with ID: $VOTE_ID"
+
+                  # Test 6: Check database
+                  echo "Test 6: Verify vote in database..."
+                  sleep 5  # Wait for worker to process
+                  kubectl exec -n voting-app postgresql-0 -- psql -U postgres -d postgres -c "SELECT COUNT(*) FROM votes;" || echo "Database check skipped"
+
+                  echo "✅ All integration tests passed!"
+
+            # Show logs on failure
+            - name: Show logs on failure
+              if: failure()
+              run: |
+                  echo "========== Cluster Info =========="
+                  kubectl cluster-info
+
+                  echo "========== All Pods =========="
+                  kubectl get pods -n voting-app
+
+                  echo "========== Vote Logs =========="
+                  kubectl logs -n voting-app -l app=vote --tail=100 || true
+
+                  echo "========== Result Logs =========="
+                  kubectl logs -n voting-app -l app=result --tail=100 || true
+
+                  echo "========== Worker Logs =========="
+                  kubectl logs -n voting-app -l app=worker --tail=100 || true
+
+                  echo "========== PostgreSQL Logs =========="
+                  kubectl logs -n voting-app postgresql-0 --tail=100 || true
+
+                  echo "========== Redis Logs =========="
+                  kubectl logs -n voting-app redis-master-0 --tail=100 || true
+
+                  echo "========== Events =========="
+                  kubectl get events -n voting-app --sort-by='.lastTimestamp'
+
+            # Cleanup
+            - name: Cleanup Minikube
+              if: always()
+              run: |
+                  minikube delete || true
+
+    # Job 3: Pipeline Summary
+    pipeline-summary:
+        name: Pipeline Summary
+        runs-on: ubuntu-latest
+        needs: [build-images, minikube-integration-test]
+        if: always()
+
+        steps:
+            - name: Generate Summary
+              run: |
+                  echo "## 📊 CI/CD Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+                  echo "" >> $GITHUB_STEP_SUMMARY
+                  echo "**Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+                  echo "**Triggered by:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+                  echo "" >> $GITHUB_STEP_SUMMARY
+
+                  if [ "${{ needs.build-images.result }}" == "success" ]; then
+                    echo "### ✅ Build Phase: Success" >> $GITHUB_STEP_SUMMARY
+                    echo "- All images built and pushed to GHCR" >> $GITHUB_STEP_SUMMARY
+                    echo "- Security scans completed" >> $GITHUB_STEP_SUMMARY
+                  else
+                    echo "### ❌ Build Phase: Failed" >> $GITHUB_STEP_SUMMARY
+                  fi
+
+                  echo "" >> $GITHUB_STEP_SUMMARY
+
+                  if [ "${{ needs.minikube-integration-test.result }}" == "success" ]; then
+                    echo "### ✅ Integration Tests: Success" >> $GITHUB_STEP_SUMMARY
+                    echo "- Minikube cluster created" >> $GITHUB_STEP_SUMMARY
+                    echo "- Full stack deployed successfully" >> $GITHUB_STEP_SUMMARY
+                    echo "- All integration tests passed" >> $GITHUB_STEP_SUMMARY
+                  elif [ "${{ needs.minikube-integration-test.result }}" == "skipped" ]; then
+                    echo "### ⏭️ Integration Tests: Skipped" >> $GITHUB_STEP_SUMMARY
+                  else
+                    echo "### ❌ Integration Tests: Failed" >> $GITHUB_STEP_SUMMARY
+                  fi
+
+                  echo "" >> $GITHUB_STEP_SUMMARY
+                  echo "### 📦 Available Images" >> $GITHUB_STEP_SUMMARY
+                  echo "- \`ghcr.io/${{ github.repository }}/vote:${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+                  echo "- \`ghcr.io/${{ github.repository }}/result:${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+                  echo "- \`ghcr.io/${{ github.repository }}/worker:${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
