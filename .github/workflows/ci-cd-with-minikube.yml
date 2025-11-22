@@ -346,23 +346,35 @@ jobs:
 
                   # Test 4: Result service content
                   echo "Test 4: Result service shows results..."
-                  RESULT_HEADERS_FILE=$(mktemp /tmp/result-headers-XXXX)
-                  RESULT_HTML_FILE=$(mktemp /tmp/result-html-XXXX)
-                  if ! curl -sS -D "$RESULT_HEADERS_FILE" http://localhost:8081 -o "$RESULT_HTML_FILE"; then
-                    echo "❌ Failed to download result page"
+                  RESULT_OK=false
+                  for i in {1..5}; do
+                    RESULT_HEADERS_FILE=$(mktemp /tmp/result-headers-XXXX)
+                    RESULT_HTML_FILE=$(mktemp /tmp/result-html-XXXX)
+                    if ! curl -sS -D "$RESULT_HEADERS_FILE" http://localhost:8081 -o "$RESULT_HTML_FILE"; then
+                      echo "Attempt $i: download failed"
+                      sleep 3
+                      continue
+                    fi
+                    BYTES=$(wc -c < "$RESULT_HTML_FILE" || echo 0)
+                    echo "Attempt $i: downloaded $BYTES bytes"
+                    echo "Result response headers (attempt $i):"
+                    sed -n '1,25p' "$RESULT_HEADERS_FILE"
+                    echo "Result HTML preview (attempt $i):"
+                    sed -n '1,40p' "$RESULT_HTML_FILE"
+                    if grep -qiE "(Cats vs Dogs -- Result|ng-app=\"catsvsdogs\"|ng-controller=\"statsCtrl\"|No votes yet)" "$RESULT_HTML_FILE"; then
+                      echo "✅ Result content detected on attempt $i"
+                      RESULT_OK=true
+                      break
+                    else
+                      echo "Attempt $i: markers not found, retrying..."
+                      sleep 3
+                    fi
+                  done
+                  if [ "$RESULT_OK" != "true" ]; then
+                    echo "❌ Result content not found after retries"
                     cat /tmp/result-pf.log || true
-                    cat "$RESULT_HEADERS_FILE" || true
                     exit 1
                   fi
-                  echo "Result response headers:"
-                  cat "$RESULT_HEADERS_FILE"
-                  echo "Result HTML preview:"
-                  sed -n '1,40p' "$RESULT_HTML_FILE"
-                  if ! grep -qiE "(Cats vs Dogs -- Result|ng-app=\"catsvsdogs\"|statsCtrl|No votes yet)" "$RESULT_HTML_FILE"; then
-                    echo "❌ Result content not found"
-                    exit 1
-                  fi
-                  echo "✅ Result content is correct"
 
                   # Test 5: Submit a vote
                   echo "Test 5: Submit a vote..."
