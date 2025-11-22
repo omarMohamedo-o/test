@@ -255,8 +255,18 @@ jobs:
                   sed -i "s|image:.*result:.*|image: ${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}/result:${{ github.sha }}|g" k8s/manifests/06-result.yaml
                   sed -i "s|image:.*worker:.*|image: ${{ env.REGISTRY }}/${{ steps.repo.outputs.repository }}/worker:${{ github.sha }}|g" k8s/manifests/07-worker.yaml
 
-                  # Apply manifests
-                  kubectl apply -f k8s/manifests/01-secrets.yaml -n voting-app
+                  # Create secrets dynamically to avoid base64 patch issues
+                  kubectl create secret generic postgres-secret \
+                    --from-literal=postgres-user=postgres \
+                    --from-literal=postgres-password=postgres \
+                    --from-literal=postgres-db=postgres \
+                    --dry-run=client -o yaml | kubectl apply -f - -n voting-app
+
+                  kubectl create secret generic redis-secret \
+                    --from-literal=redis-password="" \
+                    --dry-run=client -o yaml | kubectl apply -f - -n voting-app
+
+                  # Apply other manifests
                   kubectl apply -f k8s/manifests/02-configmap.yaml -n voting-app
                   kubectl apply -f k8s/manifests/05-vote.yaml -n voting-app
                   kubectl apply -f k8s/manifests/06-result.yaml -n voting-app
