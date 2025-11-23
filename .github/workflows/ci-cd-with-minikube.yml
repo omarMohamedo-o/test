@@ -279,21 +279,49 @@ jobs:
       - name: Wait for application pods
         run: |
           echo "Waiting for pods to be created..."
-          sleep 15
 
-          echo "Waiting for vote pods..."
+          # Wait for vote pods to exist
+          for i in {1..30}; do
+            if kubectl get pods -n voting-app -l app=vote 2>/dev/null | grep -q vote; then
+              echo "Vote pods found"
+              break
+            fi
+            echo "Waiting for vote pods to be created... ($i/30)"
+            sleep 2
+          done
+
+          # Wait for result pods to exist
+          for i in {1..30}; do
+            if kubectl get pods -n voting-app -l app=result 2>/dev/null | grep -q result; then
+              echo "Result pods found"
+              break
+            fi
+            echo "Waiting for result pods to be created... ($i/30)"
+            sleep 2
+          done
+
+          # Wait for worker pods to exist
+          for i in {1..30}; do
+            if kubectl get pods -n voting-app -l app=worker 2>/dev/null | grep -q worker; then
+              echo "Worker pods found"
+              break
+            fi
+            echo "Waiting for worker pods to be created... ($i/30)"
+            sleep 2
+          done
+
+          echo "All pods exist! Now waiting for them to be ready..."
+
           kubectl wait --for=condition=ready pod \
             -l app=vote \
             -n voting-app \
             --timeout=300s
 
-          echo "Waiting for result pods..."
           kubectl wait --for=condition=ready pod \
             -l app=result \
             -n voting-app \
             --timeout=300s
 
-          echo "Waiting for worker pods..."
           kubectl wait --for=condition=ready pod \
             -l app=worker \
             -n voting-app \
