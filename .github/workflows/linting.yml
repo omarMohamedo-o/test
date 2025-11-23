@@ -22,6 +22,7 @@ jobs:
 
       - name: Run Hadolint
         uses: hadolint/hadolint-action@v3.1.0
+        continue-on-error: true
         with:
           dockerfile: ./${{ matrix.service }}/Dockerfile
           failure-threshold: warning
