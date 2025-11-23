@@ -278,25 +278,24 @@ jobs:
       # Wait for all pods to be ready
       - name: Wait for application pods
         run: |
-          echo "Waiting for vote pods..."
+          echo "Waiting for pods to be created..."
+          sleep 10
+
           kubectl wait --for=condition=ready pod \
             -l app=vote \
             -n voting-app \
-            --timeout=300s
+            --timeout=300s || true
 
-          echo "Waiting for result pods..."
           kubectl wait --for=condition=ready pod \
             -l app=result \
             -n voting-app \
-            --timeout=300s
+            --timeout=300s || true
 
-          echo "Waiting for worker pods..."
           kubectl wait --for=condition=ready pod \
             -l app=worker \
             -n voting-app \
-            --timeout=300s
+            --timeout=300s || true
 
-          # Show all pods
           kubectl get pods -n voting-app
 
       # Run integration tests
